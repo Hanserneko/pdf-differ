@@ -59,6 +59,11 @@ def test_compare_export_round_trip(client):
     assert report["text"]["matched_characters"] > 20
     assert report["text"]["median_dx_mm"] == pytest.approx(1, abs=0.02)
     assert report["text"]["line_spacing_delta_mm"] == pytest.approx(0.12, abs=0.02)
+    diagnostics = report["diagnostics"]
+    assert diagnostics["schema_version"] == 1
+    assert diagnostics["findings"]
+    assert any(finding["type"] == "text.position" for finding in diagnostics["findings"])
+    assert all(finding["source_location"] is None for finding in diagnostics["findings"])
     assert len(report["files"]["reference"]["sha256"]) == 64
     for image_url in payload["images"].values():
         image = client.get(image_url)
@@ -70,6 +75,7 @@ def test_compare_export_round_trip(client):
     exported_html = client.get(payload["exports"]["html"])
     assert exported_html.status_code == 200
     assert "data:image/png;base64," in exported_html.text
+    assert "差异诊断" in exported_html.text
     archive = client.get(payload["exports"]["zip"])
     with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
         assert set(bundle.namelist()) == {

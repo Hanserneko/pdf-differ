@@ -225,6 +225,8 @@ function updateControls() {
   resultState.classList.toggle("stale", !fresh);
   byId("metrics-section").classList.toggle("stale", Boolean(state.result && !fresh));
   byId("line-section").classList.toggle("stale", Boolean(state.result && !fresh));
+  byId("diagnostics-section").classList.toggle("stale", Boolean(state.result && !fresh));
+  if (state.result) byId("diagnostics-count").textContent = `${fresh ? "" : "旧结果 · "}${state.result.report.diagnostics?.findings?.length ?? 0} 条诊断`;
   if (state.result) byId("line-count").textContent = `${fresh ? "" : "旧结果 · "}${state.result.report.line_differences?.length ?? 0} 条匹配行`;
   byId("metric-scope").textContent = state.detailLoading ? "正在载入 · 旧结果" : !state.result ? "等待比较" : !fresh ? "参数已变更 · 旧结果" : all ? `第 ${state.result.report.reference.page} 页详情` : state.result.report.settings.region_mm ? "所选区域" : "整页";
   byId("retry-detail").hidden = !(all && state.batchSession?.selectedPage && batchFresh() && !active);
@@ -687,6 +689,7 @@ async function loadBatchPage(number) {
 }
 
 function renderMetrics(report) {
+  renderDiagnostics(report);
   const visual = report.visual || {};
   const text = report.text || {};
   const mismatch = visual.foreground_mismatch_ratio;
@@ -744,6 +747,156 @@ function renderMetrics(report) {
     body.append(row);
   });
   byId("line-section").hidden = false;
+}
+
+const diagnosticLabels = {
+  "page.geometry": "页面几何",
+  "text.content": "文字内容",
+  "text.position": "文字位置",
+  "text.font_size": "字号",
+  "text.font_name": "字体名称",
+  "text.reflow": "换行关系",
+  "text.line_spacing": "基线行距",
+  "text.line_pattern": "连续行偏移规律",
+  "visual.region": "视觉差异区域",
+};
+
+const diagnosticMeasurementLabels = {
+  dx_mm: "横向偏移", dy_mm: "纵向偏移", font_size_pt: "字号", font_name: "字体名",
+  width_mm: "宽度", height_mm: "高度", rotation: "旋转", cropbox_pt: "裁切框", mediabox_pt: "媒体框",
+  initial_dx_mm: "初始横向偏移", initial_dy_mm: "初始纵向偏移",
+  per_line_dx_mm: "逐行横向增量", per_line_dy_mm: "逐行纵向增量",
+  baseline_spacing_mm: "基线行距", changed_pixels: "变化像素数", extracted_text: "提取文字",
+  line_break_relations: "换行关系变化",
+};
+
+function diagnosticText(parent, tag, text, className = "") {
+  const element = document.createElement(tag);
+  element.textContent = text;
+  if (className) element.className = className;
+  parent.append(element);
+  return element;
+}
+
+function diagnosticValue(value) {
+  if (value === null || value === undefined) return "不可测";
+  if (typeof value === "number") return format(value, 4);
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+function diagnosticPreviews(parent, finding, report, images) {
+  const boxes = [finding.reference?.bbox_mm ?? finding.reference?.anchor_bbox_mm, finding.candidate?.bbox_mm ?? finding.candidate?.anchor_bbox_mm]
+    .filter((box) => Array.isArray(box) && box.length === 4 && box.every(Number.isFinite));
+  if (!boxes.length || !images.reference) return;
+  const pixelsPerMM = report.settings.dpi / 25.4;
+  const x0 = Math.max(0, Math.floor((Math.min(...boxes.map((box) => box[0])) - 2) * pixelsPerMM));
+  const y0 = Math.max(0, Math.floor((Math.min(...boxes.map((box) => box[1])) - 2) * pixelsPerMM));
+  const x1 = Math.min(images.reference.naturalWidth, Math.ceil((Math.max(...boxes.map((box) => box[2])) + 2) * pixelsPerMM));
+  const y1 = Math.min(images.reference.naturalHeight, Math.ceil((Math.max(...boxes.map((box) => box[3])) + 2) * pixelsPerMM));
+  const width = x1 - x0;
+  const height = y1 - y0;
+  if (width <= 0 || height <= 0) return;
+  const scale = Math.min(1, 700 / width, 300 / height);
+  const previews = document.createElement("div");
+  previews.className = "diagnostics-previews";
+  for (const [key, label] of [["reference", "参考局部"], ["candidate", "待比较局部"], ["diff", "差异局部"]]) {
+    if (!images[key]) continue;
+    const figure = document.createElement("figure");
+    diagnosticText(figure, "figcaption", label);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    canvas.setAttribute("aria-label", label);
+    canvas.getContext("2d").drawImage(images[key], x0, y0, width, height, 0, 0, canvas.width, canvas.height);
+    figure.append(canvas);
+    previews.append(figure);
+  }
+  parent.append(previews);
+}
+
+function diagnosticCard(finding, report, images) {
+  const card = document.createElement("details");
+  card.className = "diagnostic-card";
+  const heading = document.createElement("summary");
+  diagnosticText(heading, "span", diagnosticLabels[finding.type] || finding.type || "差异", "diagnostic-type");
+  diagnosticText(heading, "span", finding.observation || "展开查看诊断依据", "diagnostic-observation");
+  diagnosticText(heading, "span", finding.reliability?.level === "high" ? "可靠" : "需复核", "diagnostic-reliability");
+  card.append(heading);
+  // 局部画布按需生成，长报告的折叠条目不占用额外图像内存。
+  card.addEventListener("toggle", () => {
+    if (!card.open || card.childElementCount > 1) return;
+    const body = document.createElement("div");
+    body.className = "diagnostic-body";
+    for (const [key, label] of [["reference", "参考"], ["candidate", "待比较"]]) {
+      const side = finding[key] || {};
+      const bounds = side.bbox_mm ?? side.anchor_bbox_mm;
+      const location = Array.isArray(bounds) ? `${side.bbox_mm ? "边界" : "相邻文字锚点"} ${bounds.map((value) => format(value, 2)).join(", ")} mm` : "无定位框";
+      diagnosticText(body, "p", `${label} · 第 ${side.page ?? "—"} 页 · ${location}`, "small-note");
+      if (side.text !== undefined && side.text !== null) diagnosticText(body, "p", side.text === "" ? "（空文本）" : side.text, "diagnostic-source-text");
+      if (side.context_before || side.context_after) diagnosticText(body, "p", `上下文 ${side.context_before || ""} ⟦变化位置⟧ ${side.context_after || ""}`, "small-note");
+    }
+    const measurements = Object.entries(finding.measurements || {});
+    if (measurements.length) {
+      const wrap = document.createElement("div");
+      wrap.className = "table-scroll diagnostic-measurements";
+      const table = document.createElement("table");
+      const header = document.createElement("tr");
+      for (const title of ["测量项", "参考", "待比较", "差值", "单位", "统计方法"]) diagnosticText(header, "th", title);
+      const head = document.createElement("thead");
+      head.append(header);
+      table.append(head);
+      const rows = document.createElement("tbody");
+      for (const [name, measurement] of measurements) {
+        const row = document.createElement("tr");
+        for (const value of [diagnosticMeasurementLabels[name] || name, diagnosticValue(measurement?.reference), diagnosticValue(measurement?.candidate), diagnosticValue(measurement?.delta), measurement?.unit || "—", measurement?.method || "—"]) diagnosticText(row, "td", value);
+        rows.append(row);
+      }
+      table.append(rows);
+      wrap.append(table);
+      body.append(wrap);
+    }
+    if (finding.target?.description) diagnosticText(body, "p", `调整目标 · ${finding.target.description}`, "diagnostic-target");
+    if (finding.target?.candidate_adjustment) diagnosticText(body, "p", `输出调整量 ${diagnosticValue(finding.target.candidate_adjustment)}`, "small-note");
+    for (const reason of finding.reliability?.reasons || []) diagnosticText(body, "p", reason, "small-note");
+    if (finding.reliability?.evidence) diagnosticText(body, "pre", JSON.stringify(finding.reliability.evidence, null, 2), "diagnostic-evidence");
+    if (finding.related_findings?.length) diagnosticText(body, "p", `关联诊断 ${finding.related_findings.join("、")}`, "small-note");
+    diagnosticText(body, "p", `诊断 ${finding.id || "—"} · 源码位置 ${finding.source_location ? diagnosticValue(finding.source_location) : "待结合源码定位"}`, "small-note");
+    diagnosticPreviews(body, finding, report, images);
+    card.append(body);
+  });
+  return card;
+}
+
+function renderDiagnostics(report) {
+  const diagnostics = report.diagnostics;
+  byId("diagnostics-section").hidden = !diagnostics;
+  const list = byId("diagnostics-list");
+  list.replaceChildren();
+  if (!diagnostics) return;
+  const findings = diagnostics.findings || [];
+  const images = state.images;
+  byId("diagnostics-metadata").textContent = JSON.stringify({
+    conventions: diagnostics.conventions, tolerances: diagnostics.tolerances,
+    summary: diagnostics.summary, coverage: diagnostics.coverage, truncated: diagnostics.truncated,
+  }, null, 2);
+  byId("diagnostics-count").textContent = `${findings.length} 条诊断`;
+  byId("diagnostics-summary").textContent = findings.length
+    ? `位置差采用待比较减参考，向右、向下为正。${diagnostics.truncated ? "诊断达到数量上限，请查看覆盖范围与限制。" : "完整诊断随 JSON、HTML 和 ZIP 导出。"}`
+    : "当前条件下未生成差异诊断，请结合测量覆盖范围与提示判断。";
+  const limitations = byId("diagnostics-limitations");
+  limitations.replaceChildren();
+  for (const text of diagnostics.limitations || []) diagnosticText(limitations, "li", text);
+  limitations.hidden = !limitations.childElementCount;
+  let shown = 0;
+  const more = byId("diagnostics-more");
+  const append = () => {
+    const end = Math.min(findings.length, shown + 50);
+    for (; shown < end; shown += 1) list.append(diagnosticCard(findings[shown], report, images));
+    more.hidden = shown >= findings.length;
+    more.textContent = `显示更多诊断（已显示 ${shown} / ${findings.length}）`;
+  };
+  more.onclick = append;
+  append();
 }
 
 function stopBlink() {

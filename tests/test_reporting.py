@@ -134,3 +134,111 @@ def test_demo_has_two_extractable_pages_with_known_first_line_shift():
         b = second[0].search_for(line)[0]
         assert abs((b.x0 - a.x0) * 25.4 / 72 - 1) < 0.001
         assert abs((b.y0 - a.y0) * 25.4 / 72 - 0.5) < 0.001
+
+
+def _diagnostics():
+    return {
+        "schema_version": 1,
+        "conventions": {"origin": "visible-page-top-left", "delta": "candidate-reference"},
+        "tolerances": {"position_mm": 0.02},
+        "summary": {"finding_count": 1, "by_type": {"text.position": 1}},
+        "coverage": {"matched_lines": 1},
+        "findings": [{
+            "id": "finding-0001", "type": "text.position", "scope": "line",
+            "reference": {"page": 1, "text": "定位锚点", "bbox_mm": [25, 30, 80, 35], "context_before": "前方内容", "context_after": "后方内容"},
+            "candidate": {"page": 2, "text": "定位锚点", "bbox_mm": [26, 30, 81, 35]},
+            "observation": "匹配文字向右偏移 1.000 mm。",
+            "measurements": {"x_mm": {"reference": 25, "candidate": 26, "delta": 1, "unit": "mm"}},
+            "target": {"description": "将当前文字向左移动 1.000 mm。", "candidate_adjustment": {"dx_mm": -1}, "requires_source_mapping": True},
+            "reliability": {"level": "high", "reasons": ["文字完整匹配"], "evidence": {"matched_characters": 4}},
+            "source_location": None,
+        }],
+        "limitations": ["源码位置需要结合工程定位。"],
+        "truncated": False,
+    }
+
+
+def test_diagnostics_show_location_values_target_and_matching_evidence():
+    report = _report()
+    report["diagnostics"] = _diagnostics()
+    html = build_html(report, {})
+    assert "差异诊断" in html
+    assert "文字位置变化" in html
+    assert "匹配文字向右偏移 1.000 mm。" in html
+    assert "将当前文字向左移动 1.000 mm。" in html
+    assert "定位锚点" in html and "前方内容" in html and "后方内容" in html
+    assert "(25.00, 30.00, 80.00, 35.00) mm" in html
+    assert "25.000" in html and "26.000" in html and "1.000" in html
+    assert "文字完整匹配" in html and "matched_characters" in html
+    assert 'class="diagnostic-status">可靠' in html
+    assert "诊断口径、阈值与覆盖信息" in html
+    assert 'id="diagnostics-0001"' in html
+    with ZipFile(BytesIO(build_bundle(report, {}))) as archive:
+        assert json.loads(archive.read("report.json"))["diagnostics"] == report["diagnostics"]
+
+
+def test_diagnostic_report_text_and_ids_cannot_inject_html_or_urls():
+    report = _report()
+    diagnostics = _diagnostics()
+    finding = diagnostics["findings"][0]
+    payload = '<img src=x onerror="alert(7)">'
+    finding["id"] = '" onmouseover="alert(1)'
+    finding["reference"]["text"] = payload
+    finding["candidate"]["context_before"] = payload
+    finding["observation"] = payload
+    finding["measurements"]["x_mm"]["unit"] = payload
+    finding["target"]["description"] = payload
+    finding["reliability"] = {"level": "unexpected", "reasons": [payload], "evidence": {"source": payload}}
+    diagnostics["limitations"] = [payload]
+    report["diagnostics"] = diagnostics
+    html = build_html(report, {})
+    assert "<img src=x" not in html
+    assert "&lt;img src=x" in html
+    assert 'class="diagnostic-status review">需要复核' in html
+    assert 'id="diagnostics-0001"' in html
+    assert 'id="\" onmouseover=' not in html
+    assert "<script" not in html
+
+
+def test_visual_region_preview_uses_fixed_image_ids_and_clipped_physical_bounds():
+    report = _report()
+    report["canvas"] = {"width_px": 1000, "height_px": 2000}
+    report["settings"]["dpi"] = 254
+    report["diagnostics"] = _diagnostics()
+    finding = report["diagnostics"]["findings"][0]
+    finding.update(type="visual.region", id='"/><script>alert(8)</script>')
+    finding["reference"]["bbox_mm"] = [10, 20, 20, 30]
+    finding["candidate"]["bbox_mm"] = [11, 22, 21, 32]
+    html = build_html(report, {key: PNG for key in ("reference", "candidate", "diff")})
+    assert html.count('viewBox="80.000000 180.000000 150.000000 160.000000"') == 3
+    assert 'href="#diagnostics-image-reference"' in html
+    assert 'href="#diagnostics-image-candidate"' in html
+    assert 'href="#diagnostics-image-diff"' in html
+    assert '<image id="diagnostics-image-reference" width="1000" height="2000"' in html
+    assert "<script" not in html
+
+
+def test_diagnostics_distinguish_empty_and_truncated_results_and_limit_previews():
+    report = _report()
+    report["diagnostics"] = {"findings": [], "truncated": True}
+    html = build_html(report, {})
+    assert "当前阈值与测量覆盖内未列出诊断项" in html
+    assert "诊断清单已达到容量限制" in html
+    report["canvas"] = {"width_px": 1000, "height_px": 2000}
+    finding = _diagnostics()["findings"][0]
+    finding["type"] = "visual.region"
+    report["diagnostics"]["findings"] = [finding] * 15
+    html = build_html(report, {"diff": PNG})
+    assert html.count('aria-label="差异图局部对照"') == 12
+    assert html.count('<article class="diagnostic"') == 15
+
+
+def test_content_insertion_keeps_empty_side_and_neighbor_anchor_explicit():
+    report = _report()
+    report["diagnostics"] = _diagnostics()
+    finding = report["diagnostics"]["findings"][0]
+    finding["type"] = "text.content"
+    finding["reference"] = {"page": 1, "text": "", "bbox_mm": None, "anchor_bbox_mm": [20, 30, 22, 35]}
+    html = build_html(report, {})
+    assert "（空文本）" in html
+    assert "相邻文字锚点 (20.00, 30.00, 22.00, 35.00) mm" in html

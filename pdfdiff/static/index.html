@@ -110,6 +110,14 @@
         </div>
 
         <section id="warnings-section" class="warnings-section" hidden><h2>测量说明</h2><ul id="warnings-list"></ul></section>
+        <section id="diagnostics-section" class="line-section diagnostics-section" hidden>
+          <div class="section-heading"><div><h2>差异诊断</h2><p class="help">查看差异位置、测量依据与输出调整目标。展开条目可对照局部图像。</p></div><span id="diagnostics-count" class="small-label"></span></div>
+          <p id="diagnostics-summary" class="small-note"></p>
+          <details class="diagnostic-metadata"><summary>诊断口径与覆盖范围</summary><pre id="diagnostics-metadata" class="diagnostic-evidence"></pre></details>
+          <ul id="diagnostics-limitations" class="diagnostics-limitations" hidden></ul>
+          <div id="diagnostics-list" class="diagnostics-list"></div>
+          <button id="diagnostics-more" class="button secondary" type="button" hidden>显示更多诊断</button>
+        </section>
         <section id="line-section" class="line-section" hidden><div class="section-heading"><div><h2>匹配行明细</h2><p class="help">用于定位局部偏移；内容无法可靠匹配时，不把缺失测量当作零误差。</p></div><span id="line-count" class="small-label"></span></div><div class="table-scroll"><table><thead><tr><th scope="col">文字片段</th><th scope="col">横向偏移 mm</th><th scope="col">纵向偏移 mm</th><th scope="col">参考字号 PDF pt</th><th scope="col">待比较字号 PDF pt</th></tr></thead><tbody id="line-body"></tbody></table></div></section>
       </main>
       <footer class="app-footer"><span>PDF Layout Diff · 本地运行</span><span>文件和比较结果仅在本机处理。</span></footer>

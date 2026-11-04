@@ -211,3 +211,44 @@ def test_unknown_total_stays_unavailable_instead_of_zero_unfinished_pages():
     assert _stats(html)["unfinished_pages"] == "不可用"
     assert "总页数不可用" in html
     assert "页数待核查" in html
+
+
+def test_batch_diagnostics_keep_locations_targets_and_evidence_without_page_images():
+    report = _report()
+    diagnostics = {
+        "findings": [{
+            "id": "issue-1", "type": "text.line_pattern", "scope": "consecutive_lines",
+            "reference": {"page": 1, "text": "连续行的起始文字", "bbox_mm": [20, 30, 180, 100]},
+            "candidate": {"page": 1, "text": "连续行的起始文字", "bbox_mm": [20, 31, 180, 103]},
+            "observation": "连续行的纵向偏移逐行增加 0.120 mm。",
+            "measurements": {"dy_per_line_mm": {"reference": 0, "candidate": 0.12, "delta": 0.12, "unit": "mm/line"}},
+            "target": {"description": "核查控制这些行的行距。", "requires_source_mapping": True},
+            "reliability": {"level": "high", "reasons": ["连续五行对应稳定"], "evidence": {"sample_count": 5, "residual_mm": 0.001}},
+            "source_location": None,
+        }],
+        "limitations": [], "truncated": False,
+    }
+    report["pages"][0]["report"]["diagnostics"] = diagnostics
+    html = build_batch_html(report)
+    assert "差异诊断" in html
+    assert "连续行偏移规律" in html
+    assert "连续行的纵向偏移逐行增加 0.120 mm。" in html
+    assert "核查控制这些行的行距。" in html
+    assert "连续五行对应稳定" in html
+    assert "(20.00, 30.00, 180.00, 100.00) mm" in html
+    assert 'id="entry-0001-diagnostics-0001"' in html
+    assert "data:image" not in html and "<img" not in html and "<svg" not in html
+    assert "包含定位、调整目标和可靠性依据" in html
+    with ZipFile(BytesIO(build_batch_bundle(report))) as archive:
+        assert json.loads(archive.read("pages/page-0001.json"))["report"]["diagnostics"] == diagnostics
+
+
+def test_batch_error_or_invalid_page_does_not_display_stale_diagnostic_as_observation():
+    report = _report()
+    stale = {"findings": [{"type": "text.position", "observation": "STORED-ONLY-OBSERVATION"}]}
+    report["pages"][0]["report"]["diagnostics"] = stale
+    report["pages"][0].update(status="error", error="页面处理失败")
+    html = build_batch_html(report)
+    assert '<p class="diagnostic-observation">STORED-ONLY-OBSERVATION</p>' not in html
+    assert "差异诊断</h2>" not in html
+    assert "STORED-ONLY-OBSERVATION" in html

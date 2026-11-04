@@ -19,6 +19,66 @@ IMAGE_LABELS = {
 }
 
 
+DIAGNOSTIC_STYLES = """
+.diagnostics { margin-top:24px; }
+.diagnostics-intro { color:#64748b; font-size:12px; margin-bottom:16px; }
+.diagnostic { border:1px solid #dfe6ef; border-left:3px solid #5b7fb7; border-radius:9px; padding:18px 20px; margin-top:13px; background:#fff; overflow-wrap:anywhere; }
+.diagnostic-heading { display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:9px; }
+.diagnostic-heading strong { font-size:14px; }
+.diagnostic-heading code { color:#718096; font-size:10px; }
+.diagnostic-status { display:inline-block; background:#eaf5ef; color:#28765b; border-radius:4px; padding:2px 7px; font-size:10px; }
+.diagnostic-status.review { background:#fff5dc; color:#876517; }
+.diagnostic-observation { font-weight:600; margin-bottom:13px; }
+.diagnostic-locations { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:12px 0; }
+.diagnostic-location { min-width:0; border-radius:6px; background:#f5f7fb; padding:11px 13px; }
+.diagnostic-label { display:block; color:#64748b; font-size:11px; margin-bottom:5px; }
+.diagnostic-text { margin:4px 0; white-space:pre-wrap; }
+.diagnostic-context,.diagnostic-coordinates { color:#6a7c92; font-size:11px; }
+.diagnostic-measurements { overflow:auto; margin:12px 0; }
+.diagnostic-measurements table { min-width:540px; font-size:11px; }
+.diagnostic-measurements th,.diagnostic-measurements td { padding:8px 10px; white-space:normal; }
+.diagnostic-target { background:#eef4fd; border-radius:6px; padding:11px 13px; margin-top:12px; }
+.diagnostic-target p { margin:2px 0; }
+.diagnostic-reasons { color:#687b92; font-size:11px; padding-left:19px; margin:10px 0 0; }
+.diagnostic-evidence { border:0; padding:0; margin-top:11px; background:transparent; }
+.diagnostic-evidence summary { font-size:11px; font-weight:500; }
+.diagnostic-evidence pre { max-height:240px; }
+.diagnostic-crops { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:13px 0; }
+.diagnostic-crop { margin:0; min-width:0; border:1px solid #dfe6ef; border-radius:6px; overflow:hidden; }
+.diagnostic-crop figcaption { padding:5px 8px; font-size:10px; background:#f5f7fb; }
+.diagnostic-crop svg { display:block; width:100%; max-height:220px; background:white; }
+.diagnostic-definitions { position:absolute; width:0; height:0; overflow:hidden; }
+.diagnostic-limits { color:#795c22; font-size:12px; padding-left:19px; margin:14px 0; }
+@media(max-width:650px) { .diagnostic { padding:14px; } .diagnostic-locations { grid-template-columns:1fr; } .diagnostic-crops { grid-template-columns:1fr; } }
+@media print { .diagnostic { break-inside:avoid; } .diagnostic-evidence { display:none; } }
+"""
+
+
+DIAGNOSTIC_LABELS = {
+    "page.geometry": "页面几何变化",
+    "text.content": "文字内容变化",
+    "text.position": "文字位置变化",
+    "text.font_size": "字号变化",
+    "text.font_name": "字体名变化",
+    "text.reflow": "换行变化",
+    "text.line_spacing": "相邻行距变化",
+    "text.line_pattern": "连续行偏移规律",
+    "visual.region": "局部视觉差异",
+}
+
+
+MEASUREMENT_LABELS = {
+    "x_mm": "横向位置", "y_mm": "纵向位置", "dx_mm": "横向偏移", "dy_mm": "纵向偏移",
+    "font_size_pt": "字号", "font_name": "字体名", "fonts": "字体名", "width_mm": "宽度",
+    "height_mm": "高度", "rotation": "旋转", "cropbox_pt": "裁切框", "line_spacing_mm": "基线行距",
+    "initial_dx_mm": "初始横向偏移", "initial_dy_mm": "初始纵向偏移",
+    "dx_per_line_mm": "逐行横向增量", "dy_per_line_mm": "逐行纵向增量",
+    "per_line_dx_mm": "逐行横向增量", "per_line_dy_mm": "逐行纵向增量",
+    "baseline_spacing_mm": "基线行距", "extracted_text": "提取文字", "changed_pixels": "RGB 变化像素",
+    "line_break_relations": "换行关系变化", "mediabox_pt": "原始页面框",
+}
+
+
 def _text(value: Any) -> str:
     return escape(str(value), quote=True)
 
@@ -111,6 +171,171 @@ def _region_marker(report: dict[str, Any], region: Any) -> str:
     return f'<span class="roi-box" role="img" aria-label="测量区域" style="{style}"></span>'
 
 
+def _diagnostic_value(value: Any) -> str:
+    if value is None:
+        return "不可测"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return _number(value)
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False, allow_nan=False)
+    return str(value)
+
+
+def _diagnostic_location(value: Any, label: str) -> str:
+    location = value if isinstance(value, dict) else {}
+    text = location.get("text")
+    text_html = f'<p class="diagnostic-text">{_text(text if text else "（空文本）")}</p>' if text is not None else ""
+    context = []
+    for key, heading in (("context_before", "前文"), ("context_after", "后文")):
+        if location.get(key):
+            context.append(f'<p class="diagnostic-context">{heading} {_text(location[key])}</p>')
+    page = location.get("page")
+    page_label = f"第 {page} 页" if page is not None else "页码未提供"
+    anchor = location.get("anchor_bbox_mm")
+    anchor_html = f'<p class="diagnostic-coordinates">相邻文字锚点 {_text(_bounds(anchor))}</p>' if anchor else ""
+    return (
+        '<div class="diagnostic-location">'
+        f'<span class="diagnostic-label">{label} · {_text(page_label)}</span>{text_html}'
+        f'<p class="diagnostic-coordinates">边界 {_text(_bounds(location.get("bbox_mm")))}</p>'
+        f'{anchor_html}{"".join(context)}</div>'
+    )
+
+
+def _diagnostic_crop_bounds(finding: dict, report: dict) -> tuple[float, float, float, float] | None:
+    canvas = report.get("canvas") or {}
+    width, height = canvas.get("width_px"), canvas.get("height_px")
+    dpi = (report.get("settings") or {}).get("dpi")
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0 for value in (width, height, dpi)):
+        return None
+    boxes = []
+    for side in ("reference", "candidate"):
+        location = finding.get(side)
+        bounds = location.get("bbox_mm") if isinstance(location, dict) else None
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 4:
+            continue
+        if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) for value in bounds):
+            continue
+        if bounds[0] < bounds[2] and bounds[1] < bounds[3]:
+            boxes.append(bounds)
+    if not boxes:
+        return None
+    scale = dpi / 25.4
+    padding = 2 * scale
+    left = max(0, min(box[0] for box in boxes) * scale - padding)
+    top = max(0, min(box[1] for box in boxes) * scale - padding)
+    right = min(width, max(box[2] for box in boxes) * scale + padding)
+    bottom = min(height, max(box[3] for box in boxes) * scale + padding)
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right - left, bottom - top
+
+
+def _diagnostics_html(report: dict, images: dict[str, bytes] | None = None, *, prefix: str = "diagnostics") -> str:
+    """单页与整本报告共用诊断展示，来源文本始终作为纯文本转义。"""
+    diagnostics = report.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        return ""
+    raw_findings = diagnostics.get("findings")
+    findings = raw_findings if isinstance(raw_findings, list) else []
+    cards, crop_sources = [], {}
+    preview_count = 0
+    images = images or {}
+    for index, raw in enumerate(findings, start=1):
+        finding = raw if isinstance(raw, dict) else {}
+        kind = str(finding.get("type", "未分类差异"))
+        reliability = finding.get("reliability") or {}
+        reliability = reliability if isinstance(reliability, dict) else {}
+        reliable = reliability.get("level") == "high"
+        reliability_label = "可靠" if reliable else "需要复核"
+        reasons = reliability.get("reasons")
+        reasons = reasons if isinstance(reasons, list) else []
+        reason_html = '<ul class="diagnostic-reasons">' + "".join(f'<li>{_text(reason)}</li>' for reason in reasons) + '</ul>' if reasons else ""
+        measurements = finding.get("measurements") or {}
+        rows = []
+        if isinstance(measurements, dict):
+            for name, value in measurements.items():
+                if not isinstance(value, dict):
+                    continue
+                rows.append([
+                    MEASUREMENT_LABELS.get(name, name),
+                    _diagnostic_value(value.get("reference")),
+                    _diagnostic_value(value.get("candidate")),
+                    _diagnostic_value(value.get("delta")),
+                    value.get("unit", "—"),
+                ])
+        measurement_html = '<div class="diagnostic-measurements">' + _table(["测量项", "参考值", "当前值", "当前减参考", "单位"], rows) + '</div>' if rows else ""
+        target = finding.get("target") or {}
+        target = target if isinstance(target, dict) else {}
+        target_html = ""
+        if target:
+            adjustment = target.get("candidate_adjustment")
+            adjustment_html = f'<p class="diagnostic-coordinates">调整量 {_text(_diagnostic_value(adjustment))}</p>' if adjustment else ""
+            target_html = (
+                '<div class="diagnostic-target"><span class="diagnostic-label">输出调整目标</span>'
+                f'<p>{_text(target.get("description", "结合定位与参考值核查"))}</p>{adjustment_html}</div>'
+            )
+        crops = []
+        bounds = _diagnostic_crop_bounds(finding, report) if kind == "visual.region" and preview_count < 12 else None
+        if bounds:
+            viewbox = " ".join(f"{value:.6f}" for value in bounds)
+            for key in ("reference", "candidate", "diff"):
+                if isinstance(images.get(key), bytes):
+                    crop_sources[key] = images[key]
+                    crops.append(
+                        f'<figure class="diagnostic-crop"><figcaption>{IMAGE_LABELS[key]}</figcaption>'
+                        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{viewbox}" role="img" aria-label="{IMAGE_LABELS[key]}局部对照">'
+                        f'<use href="#{prefix}-image-{key}"/></svg></figure>'
+                    )
+            if crops:
+                preview_count += 1
+        crop_html = f'<div class="diagnostic-crops">{"".join(crops)}</div>' if crops else ""
+        evidence = reliability.get("evidence")
+        evidence_html = (
+            '<details class="diagnostic-evidence"><summary>匹配与测量依据</summary>'
+            f'<pre>{_text(json.dumps(evidence, ensure_ascii=False, indent=2, allow_nan=False))}</pre></details>'
+            if evidence else ""
+        )
+        cards.append(
+            f'<article class="diagnostic" id="{prefix}-{index:04d}"><div class="diagnostic-heading">'
+            f'<strong>{_text(DIAGNOSTIC_LABELS.get(kind, kind))}</strong>'
+            f'<span class="diagnostic-status{"" if reliable else " review"}">{reliability_label}</span>'
+            f'<code>{_text(finding.get("id", index))}</code></div>'
+            f'<p class="diagnostic-observation">{_text(finding.get("observation", "观测未提供"))}</p>'
+            f'<div class="diagnostic-locations">{_diagnostic_location(finding.get("reference"), "参考")}'
+            f'{_diagnostic_location(finding.get("candidate"), "当前")}</div>'
+            f'{measurement_html}{crop_html}{target_html}{reason_html}{evidence_html}</article>'
+        )
+    definitions = ""
+    if crop_sources:
+        canvas = report["canvas"]
+        source_images = "".join(
+            f'<image id="{prefix}-image-{key}" width="{canvas["width_px"]}" height="{canvas["height_px"]}" '
+            f'href="data:image/png;base64,{base64.b64encode(data).decode("ascii")}"/>'
+            for key, data in crop_sources.items()
+        )
+        definitions = f'<svg xmlns="http://www.w3.org/2000/svg" class="diagnostic-definitions" aria-hidden="true"><defs>{source_images}</defs></svg>'
+    limitations = diagnostics.get("limitations")
+    limitations = limitations if isinstance(limitations, list) else []
+    if diagnostics.get("truncated"):
+        limitations = ["诊断清单已达到容量限制，需结合覆盖信息检查未列出的差异。", *limitations]
+    limits_html = '<ul class="diagnostic-limits">' + "".join(f'<li>{_text(item)}</li>' for item in limitations) + '</ul>' if limitations else ""
+    metadata = {key: diagnostics[key] for key in ("conventions", "tolerances", "coverage", "summary") if key in diagnostics}
+    metadata_html = (
+        '<details class="diagnostic-evidence"><summary>诊断口径、阈值与覆盖信息</summary>'
+        f'<pre>{_text(json.dumps(metadata, ensure_ascii=False, indent=2, allow_nan=False))}</pre></details>'
+        if metadata else ""
+    )
+    cards_html = "".join(cards) if cards else '<p class="empty">当前阈值与测量覆盖内未列出诊断项。</p>'
+    return (
+        '<section class="diagnostics"><h2>差异诊断</h2>'
+        f'<p class="diagnostics-intro">共列出 {len(findings)} 项观测。差值为当前减参考，调整量针对当前文档。'
+        '位置以可见页左上角为原点，向右、向下为正。位置与边界单位 mm，字号单位 PDF pt。'
+        '输出目标需结合源码定位后应用。局部图最多预览前 12 个视觉差异区域。</p>'
+        f'{definitions}{cards_html}'
+        f'{limits_html}{metadata_html}</section>'
+    )
+
+
 def build_html(report: dict[str, Any], images: dict[str, bytes]) -> str:
     """生成自包含 HTML；所有来自文件和测量报告的文本均转义。"""
     settings = report.get("settings") or {}
@@ -183,6 +408,7 @@ def build_html(report: dict[str, Any], images: dict[str, bytes]) -> str:
         figures.append(f'<figure><figcaption>{label}</figcaption><div class="paper">{image}</div></figure>')
     report_json = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
     generated_at = report.get("generated_at", "未提供")
+    diagnostics_html = _diagnostics_html(report, images)
     return f'''<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -191,6 +417,7 @@ def build_html(report: dict[str, Any], images: dict[str, bytes]) -> str:
 <meta name="color-scheme" content="light">
 <title>PDF 比较报告 · PDF Layout Diff</title>
 <style>
+{DIAGNOSTIC_STYLES}
 :root {{ color-scheme: light; --ink:#1c293b; --muted:#64748b; --line:#e0e7ef; --accent:#215bbf; }}
 * {{ box-sizing:border-box; }}
 body {{ margin:0; background:#edf1f6; color:var(--ink); font:14px/1.65 "Segoe UI","Microsoft YaHei",sans-serif; }}
@@ -263,6 +490,7 @@ footer {{ padding-top:24px; text-align:center; color:#8995a5; font-size:11px; }}
 <div class="files">{_file_card('reference', report)}{_file_card('candidate', report)}</div>
 <div class="metrics">{cards}</div>
 {warning_html}
+{diagnostics_html}
 <section class="sheet"><h2>测量明细</h2>{_table(['指标', '测量值', '说明'], rows, numeric_columns={1})}</section>
 <section class="sheet"><h2>逐行位置与字号</h2>
 <p class="subtle" style="font-size:12px;margin-bottom:14px">Δx、Δy 为待比较减参考，单位 mm；正值分别表示向右、向下。字号单位为 PDF pt。数值仅适用于已匹配的文字。</p>

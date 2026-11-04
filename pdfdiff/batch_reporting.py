@@ -10,6 +10,8 @@ import math
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from .reporting import DIAGNOSTIC_STYLES, _diagnostics_html
+
 
 def _mapping(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
@@ -199,6 +201,7 @@ def build_batch_html(report: dict) -> str:
         _metric("unfinished_pages", "未完成页", stats["unfinished_pages"], "等待、取消或失败后未处理的页"),
     ])
     table_rows, details = [], []
+    has_diagnostics = False
     for index, raw, page, accepted in records:
         entry = _mapping(raw)
         kind, label = _record_state(raw, accepted)
@@ -224,21 +227,27 @@ def build_batch_html(report: dict) -> str:
             warnings = [warnings]
         warning_html = '<ul class="page-warnings">' + "".join(f"<li>{_text(item)}</li>" for item in warnings) + "</ul>" if warnings else ""
         error_html = f'<p class="page-error">处理错误：{_text(entry["error"])}</p>' if entry.get("error") is not None else ""
+        diagnostics_html = _diagnostics_html(page_report, prefix=f"entry-{index:04d}-diagnostics")
+        has_diagnostics |= bool(diagnostics_html)
+        detail_note = "此条目保留测量摘要、差异诊断与处理状态；页面图像可在应用中查看。" if diagnostics_html else "此条目保留该页摘要与处理状态；没有页图或逐行记录。"
         details.append(
             f'<details class="page-detail" id="entry-{index:04d}"><summary>'
             f'<span>{_text(_entry_label(index, page))}</span>{_pill(kind, label)}</summary>'
-            f'{error_html}{warning_html}<p class="subtle detail-note">此条目保留该页摘要与处理状态；没有页图或逐行记录。</p>'
+            f'{error_html}{warning_html}{diagnostics_html}<p class="subtle detail-note">{detail_note}</p>'
             f'<pre>{escape(_json(raw))}</pre></details>'
         )
     if not table_rows:
         table_rows = ['<tr><td colspan="10" class="empty">尚无已处理的逐页记录。</td></tr>']
     headers = ["页码", "视觉状态", "墨迹不重合率", "RGB 变化像素", "Δx (mm)", "Δy (mm)", "位置 P95 (mm)", "行距差 (mm)", "字号差 (PDF pt)", "匹配字符"]
     header_html = "".join(f"<th>{_text(label)}</th>" for label in headers)
+    details_intro = "本报告保留逐页测量摘要与差异诊断，包含定位、调整目标和可靠性依据。查看页面图像，请在应用中选择对应页。" if has_diagnostics else "本报告仅保存摘要，不包含页图或逐行详情。查看图像和逐行详情，请在应用中选择对应页。"
+    footer_label = "自包含离线报告 · 不包含原始 PDF 或页图" if has_diagnostics else "自包含离线摘要 · 不包含原始 PDF、页图或逐行详情"
     return f'''<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light"><title>文档比较摘要 · PDF Layout Diff</title>
 <style>
+{DIAGNOSTIC_STYLES}
 :root {{ color-scheme:light; --ink:#1d2b40; --muted:#66778e; --line:#dfe6ef; --blue:#265fb8; }}
 * {{ box-sizing:border-box; }}
 body {{ margin:0; background:#edf1f6; color:var(--ink); font:14px/1.65 "Segoe UI","Microsoft YaHei",sans-serif; }}
@@ -313,7 +322,7 @@ footer {{ color:#8995a6; font-size:11px; text-align:center; padding-top:25px; }}
 <section class="sheet"><h2>逐页差异摘要</h2>
 <p class="sheet-intro">“有视觉差异”依据严格像素或页面几何差异判定，不是整体相似程度的百分比。空值表示不可测，未完成页和错误页没有一致性结论。宽表可横向滚动。</p>
 <div class="table-wrap"><table><thead><tr>{header_html}</tr></thead><tbody>{''.join(table_rows)}</tbody></table></div></section>
-<section class="sheet"><h2>逐页记录与提示</h2><p class="sheet-intro">本报告仅保存摘要，不包含页图或逐行详情。查看图像和逐行详情，请在应用中选择对应页。</p>
+<section class="sheet"><h2>逐页记录与提示</h2><p class="sheet-intro">{details_intro}</p>
 {''.join(details) if details else '<p class="empty">尚无逐页详情。</p>'}</section>
 <section class="sheet method"><h2>方法与解释边界</h2>
 <p>Δx、Δy、行距差和字号差均为待比较减参考；位置和行距单位 mm，字号单位 PDF pt。正 Δx 表示向右，正 Δy 表示向下；文字位置仅针对可靠匹配到的字符。</p>
@@ -322,7 +331,7 @@ footer {{ color:#8995a6; font-size:11px; text-align:center; padding-top:25px; }}
 <p>统计只采用合法、唯一页码的明确处理结果。“无视觉差异”仅表示该页在本次比较条件下完成视觉检查，不代表所有语义、隐藏内容或文件结构相同。</p></section>
 <section class="sheet"><h2>参数与版本</h2><p class="sheet-intro">供复核比较条件及运行环境。</p><pre>{escape(_json({'settings': settings, 'engine': engine}))}</pre></section>
 <details class="page-detail"><summary>完整任务数据（JSON）</summary><pre>{escape(_json(report))}</pre></details>
-<footer>PDF Layout Diff · 自包含离线摘要 · 不包含原始 PDF、页图或逐行详情</footer>
+<footer>PDF Layout Diff · {footer_label}</footer>
 </main></body></html>'''
 
 

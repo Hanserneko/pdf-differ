@@ -92,6 +92,27 @@ def test_one_changed_page_is_identified(client):
     result = wait_terminal(client, start(client, upload_pair(client, reference, candidate))["id"])
     assert result["summary"] == {"compared_pages": 3, "changed_pages": 1, "unchanged_pages": 2, "error_pages": 0}
     assert [page["has_visual_difference"] for page in result["pages"]] == [False, True, False]
+    diagnostics = result["pages"][1]["report"]["diagnostics"]
+    assert any(finding["type"] == "text.content" for finding in diagnostics["findings"])
+    assert "line_differences" not in result["pages"][1]["report"]
+    detail = client.post(f"/api/batches/{result['id']}/pages/2/compare").json()
+    assert detail["report"]["diagnostics"] == diagnostics
+    exported = client.get(result["exports"]["json"]).json()
+    assert exported["pages"][1]["report"]["diagnostics"] == diagnostics
+
+
+def test_full_document_diagnostic_ids_are_unique_across_pages(client):
+    reference = make_pdf(["Reference alpha", "Reference beta"])
+    candidate = make_pdf(["Candidate alpha", "Candidate beta"])
+    result = wait_terminal(client, start(client, upload_pair(client, reference, candidate))["id"])
+    findings = [item for page in result["pages"] for item in page["report"]["diagnostics"]["findings"]]
+    assert findings
+    identifiers = [item["id"] for item in findings]
+    assert len(identifiers) == len(set(identifiers))
+    for item in findings:
+        page = item["reference"]["page"]
+        assert item["candidate"]["page"] == page
+        assert f"r{page}-c{page}-" in item["id"]
 
 
 @pytest.mark.parametrize("change", ["size", "rotation", "cropbox"])

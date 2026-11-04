@@ -14,6 +14,8 @@ import numpy as np
 from PIL import Image
 import pymupdf
 
+from .diagnostics import build_diagnostics
+
 
 MM_PER_PT = 25.4 / 72
 MAX_FILE_BYTES = 50 * 1024 * 1024
@@ -161,10 +163,11 @@ def _extract_text(page: pymupdf.Page, region: tuple[float, float, float, float] 
             direction_y = direction[0] * rotation.b + direction[1] * rotation.d
             horizontal = abs(direction_y) < 0.01
             chars = []
+            raw_chars = []
             for span in line["spans"]:
                 for char in span.get("chars", []):
                     value = char.get("c", "")
-                    if not value or value.isspace():
+                    if not value:
                         continue
                     point = pymupdf.Point(char["origin"]) * rotation
                     bbox = pymupdf.Rect(char["bbox"]) * rotation
@@ -172,19 +175,24 @@ def _extract_text(page: pymupdf.Page, region: tuple[float, float, float, float] 
                     center_y = (bbox.y0 + bbox.y1) * MM_PER_PT / 2
                     if region and not (region[0] <= center_x < region[2] and region[1] <= center_y < region[3]):
                         continue
-                    chars.append({
+                    item = {
                         "c": value,
                         "x_mm": point.x * MM_PER_PT,
                         "y_mm": point.y * MM_PER_PT,
                         "size_pt": float(span["size"]),
                         "font": span.get("font", ""),
+                        "visible": span.get("alpha", 255) > 0 and bool(span.get("char_flags", 16) & 48),
                         "bbox_mm": [v * MM_PER_PT for v in bbox],
-                    })
+                    }
+                    raw_chars.extend({**item, "c": codepoint} for codepoint in value)
+                    if not value.isspace():
+                        chars.append(item)
             if chars:
                 has_non_horizontal |= not horizontal
                 lines.append({
                     "text": "".join(char["c"] for char in chars),
                     "chars": chars,
+                    "raw_chars": raw_chars,
                     "horizontal": horizontal,
                     "x_mm": float(np.median([char["x_mm"] for char in chars])),
                     "y_mm": float(np.median([char["y_mm"] for char in chars])),
@@ -195,6 +203,8 @@ def _extract_text(page: pymupdf.Page, region: tuple[float, float, float, float] 
     characters = []
     for index, line in enumerate(lines):
         line["id"] = index
+        for char in line["raw_chars"]:
+            char["line_id"] = index
         for char in line["chars"]:
             char["line_id"] = index
             characters.append(char)
@@ -205,10 +215,14 @@ def _extract_text(page: pymupdf.Page, region: tuple[float, float, float, float] 
     return characters, lines, warnings
 
 
-def _text_metrics(reference_page: pymupdf.Page, candidate_page: pymupdf.Page, region: tuple | None) -> tuple[dict, list[dict], list[str]]:
+def _text_metrics(reference_page: pymupdf.Page, candidate_page: pymupdf.Page, region: tuple | None) -> tuple[dict, list[dict], list[str], dict]:
     chars_a, lines_a, warnings_a = _extract_text(reference_page, region)
     chars_b, lines_b, warnings_b = _extract_text(candidate_page, region)
     warnings = warnings_a + warnings_b
+    context = {
+        "reference_chars": chars_a, "candidate_chars": chars_b,
+        "reference_lines": lines_a, "candidate_lines": lines_b, "line_pairs": [],
+    }
     result = {
         "matched_characters": 0,
         "reference_characters": len(chars_a),
@@ -231,10 +245,10 @@ def _text_metrics(reference_page: pymupdf.Page, candidate_page: pymupdf.Page, re
     }
     if not chars_a or not chars_b:
         warnings.append("一侧或双方区域没有可提取文字：不运行 OCR，文字位置和行距指标留空。")
-        return result, [], warnings
+        return result, [], warnings, context
     if max(len(chars_a), len(chars_b)) > MAX_TEXT_CHARACTERS:
-        warnings.append(f"区域文字超过 {MAX_TEXT_CHARACTERS} 字符，为控制计算量仅提供图像比较；可缩小选区。")
-        return result, [], warnings
+        warnings.append(f"区域非空白文字超过 {MAX_TEXT_CHARACTERS} 字符，跳过文字位置、字号和行距匹配；内容诊断受独立字符上限约束，可缩小选区。")
+        return result, [], warnings, context
     text_a = "".join(char["c"] for char in chars_a)
     text_b = "".join(char["c"] for char in chars_b)
     if text_a == text_b:
@@ -244,6 +258,7 @@ def _text_metrics(reference_page: pymupdf.Page, candidate_page: pymupdf.Page, re
         matcher = SequenceMatcher(a=text_a, b=text_b, autojunk=False)
         pairs = [(block.a + i, block.b + i) for block in matcher.get_matching_blocks() for i in range(block.size)]
     matched = len(pairs)
+    context["pairs"] = pairs
     ratio = 2 * matched / (len(chars_a) + len(chars_b))
     result.update({
         "matched_characters": matched,
@@ -263,7 +278,7 @@ def _text_metrics(reference_page: pymupdf.Page, candidate_page: pymupdf.Page, re
         )
     if ratio < 0.6 or not pairs or (text_a != text_b and matched < 4):
         warnings.append("共同文字过少或文本顺序差异较大：仅报告匹配数量，不据此计算排版位置。")
-        return result, [], warnings
+        return result, [], warnings, context
     if ratio < 0.9:
         warnings.append("两侧文本内容差异较多：文字位置仅针对按顺序匹配到的共同字符，重复文本可能存在歧义。")
     if result["line_break_change_count"]:
@@ -304,11 +319,14 @@ def _text_metrics(reference_page: pymupdf.Page, candidate_page: pymupdf.Page, re
             continue
         line_pairs.append((a, b, values))
     line_pairs.sort()
+    context["line_pairs"] = line_pairs
     differences = []
     for a, b, values in line_pairs:
         line_a, line_b = lines_a[a], lines_b[b]
         difference = {
             "text": line_a["text"],
+            "reference_line": a + 1,
+            "candidate_line": b + 1,
             "candidate_text": line_b["text"],
             "dx_mm": float(np.median([chars_b[j]["x_mm"] - chars_a[i]["x_mm"] for i, j in values])),
             "dy_mm": float(np.median([chars_b[j]["y_mm"] - chars_a[i]["y_mm"] for i, j in values])),
@@ -347,7 +365,7 @@ def _text_metrics(reference_page: pymupdf.Page, candidate_page: pymupdf.Page, re
         result["candidate_line_spacing_mm"] = float(np.median(spacing_b))
         result["line_spacing_delta_mm"] = float(np.median(np.asarray(spacing_b) - np.asarray(spacing_a)))
     result["line_spacing_samples"] = len(spacing_a)
-    return result, differences, warnings
+    return result, differences, warnings, context
 
 
 def _font_name(value: str) -> str:
@@ -420,7 +438,7 @@ def compare_pages(
             "rgb_changed_pixels": int(np.count_nonzero(delta[y0_px:y1_px, x0_px:x1_px])),
             "foreground_color_space": "RGB-to-grayscale",
         })
-        text, line_differences, text_warnings = _text_metrics(page_a, page_b, region_mm)
+        text, line_differences, text_warnings, text_context = _text_metrics(page_a, page_b, region_mm)
         warnings = _page_warnings(page_a) + _page_warnings(page_b) + text_warnings
         if doc_a.is_repaired or doc_b.is_repaired:
             warnings.append("解析器修复过输入 PDF，建议检查源文件和页面显示。")
@@ -449,6 +467,7 @@ def compare_pages(
             "warnings": list(dict.fromkeys(warnings)),
         }
         # 参考单独出现为红色，待比较单独出现为蓝色，重合墨迹为深色。
+        report["diagnostics"] = build_diagnostics(report, text_context, delta[y0_px:y1_px, x0_px:x1_px], (x0_px, y0_px))
         overlay = np.stack((image_b, np.minimum(image_a, image_b), image_a), axis=2)
         images["overlay"] = _encode_png(overlay)
         del overlay
