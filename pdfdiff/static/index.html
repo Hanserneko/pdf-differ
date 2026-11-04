@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>PDF Layout Diff</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-icon" aria-hidden="true">▧</span><div><h1>PDF Layout Diff</h1><p>PDF 视觉与排版比较</p></div></div>
+        <div class="top-actions"><span class="local-badge"><i></i> 本机处理</span><button id="demo-button" class="button secondary" type="button">试用内置示例</button></div>
+      </header>
+
+      <main>
+        <section class="setup-panel" aria-label="选择文件和比较参数">
+          <div class="document-grid">
+            <section id="reference-drop" class="document-card reference-card">
+              <div class="card-heading"><span class="source-tag reference-tag">参考 PDF</span><span class="muted">作为比较基准</span></div>
+              <label class="file-target" for="reference-file"><span class="file-icon" aria-hidden="true">↥</span><span><strong id="reference-name">选择或拖入参考 PDF</strong><small id="reference-meta">选择文件后，可独立指定比较页码</small></span><span class="file-action">选择文件</span></label>
+              <input id="reference-file" class="visually-hidden" type="file" accept=".pdf,application/pdf">
+              <div class="document-footer"><label class="single-page-control" for="reference-page">比较页码</label><input class="single-page-control" id="reference-page" type="number" value="1" min="1" step="1" disabled><span id="reference-page-total" class="muted">/ — 页</span><span id="reference-size" class="page-size"></span></div>
+            </section>
+            <section id="candidate-drop" class="document-card candidate-card">
+              <div class="card-heading"><span class="source-tag candidate-tag">待比较 PDF</span><span class="muted">与参考文件对照</span></div>
+              <label class="file-target" for="candidate-file"><span class="file-icon" aria-hidden="true">↥</span><span><strong id="candidate-name">选择或拖入待比较 PDF</strong><small id="candidate-meta">比较页面外观、位置与文字排版</small></span><span class="file-action">选择文件</span></label>
+              <input id="candidate-file" class="visually-hidden" type="file" accept=".pdf,application/pdf">
+              <div class="document-footer"><label class="single-page-control" for="candidate-page">比较页码</label><input class="single-page-control" id="candidate-page" type="number" value="1" min="1" step="1" disabled><span id="candidate-page-total" class="muted">/ — 页</span><span id="candidate-size" class="page-size"></span></div>
+            </section>
+          </div>
+          <div class="scope-bar">
+            <fieldset class="scope-picker"><legend>比较范围</legend><label><input id="scope-single" name="comparison-scope" type="radio" value="single" checked><span>单页比较</span></label><label><input id="scope-all" name="comparison-scope" type="radio" value="all" disabled><span>全页比较</span></label></fieldset>
+            <p id="scope-help" class="help">两份 PDF 页数相同时，可按相同页码一次比较全部页面。</p>
+          </div>
+          <div class="settings-bar">
+            <div class="setting"><label for="dpi">渲染精度</label><select id="dpi"><option value="96">96 DPI · 快速</option><option value="150" selected>150 DPI · 标准</option><option value="200">200 DPI · 细致</option><option value="300">300 DPI · 精细</option><option value="600">600 DPI · 高精度</option></select></div>
+            <details class="advanced"><summary>高级参数</summary><label for="ink-threshold">墨迹阈值 <input id="ink-threshold" type="number" min="1" max="254" step="1" value="220"></label><p>灰度低于此值视为墨迹。改变阈值会影响像素指标。</p></details>
+            <p class="coordinate-note">保持原始位置 · 以可见页左上角对齐</p>
+            <button id="compare-button" class="button primary" type="button" disabled><span aria-hidden="true">⇄</span> 开始比较</button>
+          </div>
+        </section>
+
+        <div id="error-message" class="message error" role="alert" hidden></div>
+        <div id="status-message" class="message info" role="status" aria-live="polite" hidden></div>
+
+        <section id="batch-section" class="batch-section" aria-label="全页比较总览" hidden>
+          <div class="batch-heading"><div><h2>全页比较总览 <span id="batch-state" class="batch-state">准备中</span></h2><p id="batch-caption" class="help"></p></div><button id="cancel-batch" class="button secondary" type="button" hidden>取消比较</button></div>
+          <div class="batch-progress-row"><progress id="batch-progress" value="0" max="1" aria-label="全页比较进度"></progress><span id="batch-progress-text" role="status" aria-live="polite">等待开始</span></div>
+          <div class="batch-counts"><div><span>总页数</span><strong id="batch-total">—</strong></div><div><span>已比较</span><strong id="batch-compared">0</strong></div><div class="count-changed"><span>有差异</span><strong id="batch-changed">0</strong></div><div class="count-unchanged"><span>视觉一致</span><strong id="batch-unchanged">0</strong></div><div class="count-error"><span>失败</span><strong id="batch-errors">0</strong></div></div>
+          <p id="batch-warning" class="batch-warning" role="status" hidden></p>
+          <div class="batch-table-toolbar"><label class="difference-filter"><input id="batch-only-differences" type="checkbox">仅看差异与失败页</label><span id="batch-row-count" class="small-label"></span><div class="batch-export-links"><a id="batch-export-html" class="button secondary disabled-link" aria-disabled="true">整本 HTML</a><a id="batch-export-json" class="button secondary disabled-link" aria-disabled="true">整本 JSON</a><a id="batch-export-zip" class="button secondary disabled-link" aria-disabled="true">整本 ZIP</a></div></div>
+          <p class="small-note batch-export-note">整本报告包含总览和逐页数据，不包含全部页面图片。选择某页可查看六种视图并下载该页差异图。</p>
+          <div class="table-scroll batch-table-scroll"><table><thead><tr><th scope="col">页码</th><th scope="col">状态</th><th scope="col">墨迹不重合率</th><th scope="col">横向偏移 mm</th><th scope="col">纵向偏移 mm</th><th scope="col">页面详情</th></tr></thead><tbody id="batch-page-body"></tbody></table></div>
+        </section>
+
+        <div class="workbench">
+          <section class="workspace" aria-label="页面比较视图">
+            <div class="workspace-heading"><div><h2>页面对照</h2><span id="comparison-caption" class="muted">选择两份 PDF，比较页面外观和文字排版</span></div><span id="result-state" class="result-state" hidden></span></div>
+            <div class="view-tabs" role="tablist" aria-label="显示方式">
+              <button type="button" role="tab" data-mode="overlay" aria-selected="true">叠加</button>
+              <button type="button" role="tab" data-mode="side-by-side" aria-selected="false">并排</button>
+              <button type="button" role="tab" data-mode="diff" aria-selected="false">差异图</button>
+              <button type="button" role="tab" data-mode="blink" aria-selected="false">闪烁</button>
+              <button type="button" role="tab" data-mode="reference" aria-selected="false">参考页</button>
+              <button type="button" role="tab" data-mode="candidate" aria-selected="false">待比较页</button>
+            </div>
+            <div class="viewer-toolbar">
+              <div class="tool-group"><button id="pan-tool" class="icon-button active" type="button" aria-pressed="true" title="拖动画布">拖动</button><button id="region-tool" class="icon-button" type="button" aria-pressed="false" title="在页面上拖拽，选择需要测量的区域">框选测量</button><button id="retry-detail" class="icon-button" type="button" hidden>重新载入详情</button></div>
+              <div class="zoom-controls"><button id="fit-button" class="icon-button" type="button">适应宽度</button><button id="actual-size-button" class="icon-button" type="button" title="一个图像像素对应一个屏幕像素">100%</button><input id="zoom" type="range" min="3" max="400" step="1" value="50" aria-label="显示缩放百分比"><output id="zoom-value" for="zoom">—</output></div>
+            </div>
+            <div id="empty-state" class="empty-state"><div class="empty-pages" aria-hidden="true"><span>A</span><span>B</span></div><h3>从两张页面，看清排版差异</h3><p>叠加定位重影，框选测量细节。<br>比较过程不移动、不拉伸页面内容。</p><button id="empty-demo-button" class="button secondary" type="button">查看示例效果 <span aria-hidden="true">→</span></button></div>
+            <div id="viewer" class="viewer" hidden>
+              <div id="first-pane" class="view-pane"><div id="first-view-label" class="pane-label">叠加视图</div><div id="first-scroll" class="scroll-frame"><div class="canvas-stage"><canvas id="first-canvas" aria-label="PDF 比较页面，可拖动或框选"></canvas></div></div></div>
+              <div id="second-pane" class="view-pane" hidden><div class="pane-label"><span class="legend-dot blue"></span> 待比较页</div><div id="second-scroll" class="scroll-frame"><div class="canvas-stage"><canvas id="second-canvas" aria-label="待比较 PDF 页面，可拖动或框选"></canvas></div></div></div>
+            </div>
+            <div class="viewer-footer"><div id="view-legend" class="legend"><div id="overlay-legend" class="legend"><span><i class="legend-dot red"></i>参考</span><span><i class="legend-dot blue"></i>待比较</span><span><i class="legend-dot dark"></i>重合</span></div><div id="diff-legend" class="legend" hidden><span><i class="legend-dot red"></i>RGB 差异</span><span>淡灰为页面上下文</span></div></div><span id="pointer-position" class="muted" title="按住 Ctrl 并滚动鼠标，可围绕指针缩放">单位：mm · Ctrl + 滚轮缩放</span></div>
+          </section>
+
+          <aside class="inspector" aria-label="测量参数和结果">
+            <section class="inspector-section region-section"><div class="section-heading"><h2>测量区域</h2><button id="clear-region" class="text-button" type="button" disabled>恢复整页</button></div><p id="region-description" class="help">默认测量整页。可框选标题、正文或页码，也可输入坐标。</p><div class="region-fields"><label for="region-x0">左 X <span>mm</span><input id="region-x0" type="number" min="0" step="0.1" placeholder="0.00"></label><label for="region-y0">上 Y <span>mm</span><input id="region-y0" type="number" min="0" step="0.1" placeholder="0.00"></label><label for="region-x1">右 X <span>mm</span><input id="region-x1" type="number" min="0" step="0.1" placeholder="页宽"></label><label for="region-y1">下 Y <span>mm</span><input id="region-y1" type="number" min="0" step="0.1" placeholder="页高"></label></div><p id="region-note" class="small-note">坐标相对可见页左上角；区域变化后请重新比较。</p></section>
+            <section id="metrics-section" class="inspector-section">
+              <div class="section-heading"><h2>差异测量</h2><span id="metric-scope" class="small-label">等待比较</span></div>
+              <div class="metric-feature"><span>墨迹不重合率</span><strong id="metric-mismatch">—</strong><small>在双方墨迹并集内统计，越低越接近</small></div>
+              <div class="metric-grid">
+                <div class="metric"><span>横向偏移</span><strong id="metric-dx">—</strong><small>待比较 − 参考 · mm</small></div>
+                <div class="metric"><span>纵向偏移</span><strong id="metric-dy">—</strong><small>待比较 − 参考 · mm</small></div>
+                <div class="metric"><span>行距差</span><strong id="metric-spacing">—</strong><small>待比较 − 参考 · mm</small></div>
+                <div class="metric"><span>位置误差 P95</span><strong id="metric-position">—</strong><small>匹配字符 · mm</small></div>
+              </div>
+              <dl class="detail-metrics">
+                <div><dt>匹配字符 / 行</dt><dd id="metric-matches">—</dd></div>
+                <div><dt>参考 / 待比较字符数</dt><dd id="metric-characters">—</dd></div>
+                <div><dt>未匹配字符（参考 / 待比较）</dt><dd id="metric-unmatched">—</dd></div>
+                <div><dt>字号中位差 · PDF pt</dt><dd id="metric-font-size">—</dd></div>
+                <div><dt>字体名称不同的匹配字符</dt><dd id="metric-font-names">—</dd></div>
+                <div><dt>换行变化数</dt><dd id="metric-line-breaks">—</dd></div>
+                <div><dt>参考 / 待比较行距</dt><dd id="metric-line-heights">—</dd></div>
+                <div><dt>轮廓距离 P95</dt><dd id="metric-edge">—</dd></div>
+                <div><dt>RGB 变化像素数</dt><dd id="metric-rgb-pixels">—</dd></div>
+                <div><dt>RGB 平均差（0–1）</dt><dd id="metric-rgb-error">—</dd></div>
+                <div id="metric-ssim-row" hidden><dt>局部结构相似度 SSIM</dt><dd id="metric-ssim">未启用</dd></div>
+              </dl>
+              <p class="small-note">偏移与字号差均为待比较 − 参考；向右、向下为正。像素指标受渲染精度和墨迹阈值影响，RGB 平均差在整个测量区域内统计。</p>
+            </section>
+            <section class="inspector-section exports-section"><div class="section-heading"><h2>导出结果</h2></div><p id="export-scope" class="small-note">当前单页的报告与图片。</p><div class="export-grid"><a id="export-html" class="button secondary disabled-link" aria-disabled="true">HTML 报告</a><a id="export-json" class="button secondary disabled-link" aria-disabled="true">JSON 数据</a><a id="export-zip" class="button secondary disabled-link" aria-disabled="true">完整 ZIP</a><a id="export-diff" class="button secondary disabled-link" aria-disabled="true">差异 PNG</a></div></section>
+          </aside>
+        </div>
+
+        <section id="warnings-section" class="warnings-section" hidden><h2>测量说明</h2><ul id="warnings-list"></ul></section>
+        <section id="line-section" class="line-section" hidden><div class="section-heading"><div><h2>匹配行明细</h2><p class="help">用于定位局部偏移；内容无法可靠匹配时，不把缺失测量当作零误差。</p></div><span id="line-count" class="small-label"></span></div><div class="table-scroll"><table><thead><tr><th scope="col">文字片段</th><th scope="col">横向偏移 mm</th><th scope="col">纵向偏移 mm</th><th scope="col">参考字号 PDF pt</th><th scope="col">待比较字号 PDF pt</th></tr></thead><tbody id="line-body"></tbody></table></div></section>
+      </main>
+      <footer class="app-footer"><span>PDF Layout Diff · 本地运行</span><span>文件和比较结果仅在本机处理。</span></footer>
+    </div>
+  </body>
+</html>

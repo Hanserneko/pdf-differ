@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-layout-diff"
+version = "0.1.0"
+description = "Local PDF visual comparison and layout measurement"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+keywords = ["pdf", "diff", "comparison", "layout", "visual-regression"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Graphics",
+]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "PyMuPDF>=1.24,<2",
+  "numpy>=1.26,<3",
+  "Pillow>=10.4,<13",
+  "opencv-python-headless>=4.10,<5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "httpx>=0.27,<1", "build>=1.2,<2"]
+
+[project.scripts]
+pdf-layout-diff = "pdfdiff.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pdfdiff*"]
+
+[tool.setuptools.package-data]
+pdfdiff = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
