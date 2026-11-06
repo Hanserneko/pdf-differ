@@ -1,1 +1,2 @@
 include run.py
+recursive-include skills/pdf-layout-diff *.md

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -17,12 +18,15 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .batch import BatchBusyError, BatchCancellationRequested, BatchJob, BatchManager
+from .batch import BatchBusyError, BatchCancellationRequested, BatchCapacityError, BatchJob, BatchManager
+from .api_v1 import ApiProblem, problem_handler, problem_response, router as v1_router
 from .demo import make_demo_pair
 from .engine import ComparisonResult, compare_pages, inspect_pdf
 from .reporting import build_bundle, build_html
@@ -105,26 +109,38 @@ class MemoryStore:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     application.state.store = MemoryStore()
+    configured_roots = getattr(application.state, "configured_roots", (Path.cwd(),))
+    application.state.allowed_roots = tuple(Path(root).resolve() for root in configured_roots)
+    application.state.v1_image_lock = asyncio.Lock()
+    application.state.v1_image_cache = OrderedDict()
     # MuPDF 不适合多个线程同时调用；所有相关操作固定在同一个工作线程。
     application.state.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdf-engine")
     application.state.comparison_gate = asyncio.Semaphore(1)
 
-    async def render_batch_page(job: BatchJob, page: int):
+    async def call_engine(function, *args, **kwargs):
+        return await application_engine_call(application, function, *args, **kwargs)
+
+    application.state.call_engine = call_engine
+    application.state.engine_versions = engine_versions
+
+    async def render_batch_page(job: BatchJob, page: int, *, check_cancel: bool = True):
         async with application.state.comparison_gate:
-            if job.cancel_requested:
+            if check_cancel and job.cancel_requested:
                 raise BatchCancellationRequested
+            reference_page, candidate_page = job.page_pair(page)
             return await application_engine_call(
                 application,
                 compare_pages,
                 job.reference_data,
                 job.candidate_data,
-                reference_page=page,
-                candidate_page=page,
+                reference_page=reference_page,
+                candidate_page=candidate_page,
                 dpi=job.dpi,
                 ink_threshold=job.ink_threshold,
-                region_mm=None,
+                region_mm=job.region_mm,
             )
 
+    application.state.render_pair = render_batch_page
     application.state.batches = BatchManager(render_batch_page, TTL_SECONDS)
 
     async def expire_cache():
@@ -144,16 +160,32 @@ async def lifespan(application: FastAPI):
         application.state.worker.shutdown(wait=True, cancel_futures=True)
         application.state.store.documents.clear()
         application.state.store.results.clear()
+        application.state.v1_image_cache.clear()
 
 
 app = FastAPI(title="PDF Layout Diff", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.add_middleware(
     TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "[::1]", "testserver"]
 )
+app.add_exception_handler(ApiProblem, problem_handler)
+app.include_router(v1_router)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, error: StarletteHTTPException):
+    if request.url.path.startswith("/api/v1/"):
+        code = {404: "route_not_found", 405: "method_not_allowed"}.get(error.status_code, "http_error")
+        response = problem_response(request, ApiProblem(error.status_code, code, str(error.detail)))
+        if error.headers:
+            response.headers.update(error.headers)
+        return response
+    return await http_exception_handler(request, error)
 
 
 @app.exception_handler(RequestValidationError)
 async def invalid_parameters(request: Request, error: RequestValidationError):
+    if request.url.path.startswith("/api/v1/"):
+        return problem_response(request, ApiProblem(422, "invalid_request", "请求格式或参数无效，请检查来源、页面配对与测量参数。"))
     # 不回显输入中的 NaN、二进制或任意大数据，保持错误响应本身也可安全序列化。
     fields = ", ".join(dict.fromkeys(str(item["loc"][-1]) for item in error.errors()))
     return JSONResponse({"detail": f"参数无效：{fields}。请检查页码、DPI 和选区坐标。"}, status_code=422)
@@ -167,6 +199,8 @@ async def local_access(request: Request, call_next):
         if request.headers.get("sec-fetch-site") == "cross-site" or (
             origin and origin != f"{request.url.scheme}://{request.headers.get('host')}"
         ):
+            if request.url.path.startswith("/api/v1/"):
+                return problem_response(request, ApiProblem(403, "origin_not_allowed", "请求来源不受允许。"))
             return Response(
                 json.dumps({"detail": "仅允许本机界面发起同源请求。"}, ensure_ascii=False),
                 status_code=403,
@@ -358,6 +392,8 @@ async def start_batch(request: Request, settings: BatchRequest):
         )
     except BatchBusyError as error:
         raise HTTPException(409, "已有全页比较任务正在运行，请等待完成或先取消该任务。") from error
+    except BatchCapacityError as error:
+        raise HTTPException(413, "源文件引用超出任务缓存容量，请减少文件大小。") from error
     return job.snapshot()
 
 
@@ -382,16 +418,17 @@ async def compare_batch_page(request: Request, key: str, page: int):
         raise HTTPException(409, "该页尚未完成比较，请等待进度更新。")
     if entry["status"] != "done":
         raise HTTPException(400, "该页在全页比较中未成功，暂时无法打开详情；可使用单页比较重试。")
+    reference_page, candidate_page = job.page_pair(page)
     return await render_comparison(
         request,
         job.reference_data,
         job.candidate_data,
         job.files,
-        reference_page=page,
-        candidate_page=page,
+        reference_page=reference_page,
+        candidate_page=candidate_page,
         dpi=job.dpi,
         ink_threshold=job.ink_threshold,
-        region_mm=None,
+        region_mm=job.region_mm,
     )
 
 

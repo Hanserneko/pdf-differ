@@ -15,6 +15,8 @@
 
 通过本地浏览器界面运行，支持指定单页比较，以及相同页数文档的全部页面比较。
 
+支持通过本机 HTTP API 提交文件路径或上传 ID，异步取得包含完整差异诊断的报告。
+
 ## 安装与启动
 
 需要 Python 3.11 或更新版本和现代浏览器。以下命令在源代码目录执行。
@@ -44,6 +46,29 @@ python3 -m venv .venv
 ```
 
 首次安装依赖需要联网，安装完成后可以离线使用。
+
+## HTTP API 与 AI 技能
+
+API 默认可读取启动工作目录及其子目录中的 PDF。比较其他目录的文件时，在启动时指定允许读取的目录，可重复使用 `--allow-root`。
+
+```powershell
+.\.venv\Scripts\python.exe -m pdfdiff --allow-root "E:\documents"
+```
+
+向 `POST /api/v1/comparisons` 提交 JSON，可按同页码比较全部页面。
+
+```json
+{
+  "reference": {"path": "E:\\documents\\reference.pdf"},
+  "candidate": {"path": "E:\\documents\\candidate.pdf"},
+  "pages": {"mode": "all"},
+  "settings": {"dpi": 150, "ink_threshold": 220}
+}
+```
+
+创建成功返回 HTTP 202。沿响应的 `links.self` 查询状态，进入终态后获取 `GET /api/v1/comparisons/{id}/report`。报告保留每个比较项的完整测量、差异定位、调整目标与可靠性证据。页数不同时可显式指定页面对应列表。
+
+独立的 AI 技能位于 [skills/pdf-layout-diff/SKILL.md](skills/pdf-layout-diff/SKILL.md)，包含诊断解释、源工程调整与复测流程。将该目录交给支持 `SKILL.md` 的助手读取或按其技能加载方式使用。请求参数、图片获取、幂等重试与错误码见 [HTTP API 参考](skills/pdf-layout-diff/references/api.md)。
 
 ## 使用
 
@@ -121,6 +146,8 @@ python3 -m venv .venv
 ## 数据与隐私
 
 程序默认只监听 `127.0.0.1`，面向单人本地使用。上传的 PDF 和比较结果保存在服务进程内存中，不作为应用文件持久化；闲置 60 分钟后过期，每分钟执行清理。停止服务会清空缓存，重启或刷新页面后可能需要重新选择文件。
+
+路径 API 按 `--allow-root` 限定范围读取 PDF，并在创建任务时保存输入快照。修改磁盘上的文件后需提交新任务，已有任务继续对应原快照。报告使用哈希、大小和读取时间记录输入来源。
 
 文档缓存最多保留 12 份文档（单份 32 MiB、合计 128 MiB）；单页结果和全页任务各最多保留 4 份，达到容量限制时淘汰最久未使用的已结束记录。一次只能运行一个全页任务，运行中的任务不会被过期清理或容量淘汰。
 
